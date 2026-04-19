@@ -1,0 +1,24 @@
+"""Constants for the Levoit Vital 200S integration."""
+
+DOMAIN = "levoit_vital200s"
+
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"
+CONF_TIME_ZONE = "time_zone"
+
+DEFAULT_TIME_ZONE = "America/New_York"
+SCAN_INTERVAL_SECONDS = 30
+
+MODE_MANUAL = "manual"
+MODE_AUTO = "auto"
+MODE_SLEEP = "sleep"
+MODE_PET = "pet"
+
+PRESET_MODES = [MODE_MANUAL, MODE_AUTO, MODE_SLEEP, MODE_PET]
+
+SPEED_RANGE = (1, 4)
+
+AUTO_PREF_DEFAULT = "default"
+AUTO_PREF_EFFICIENT = "efficient"
+AUTO_PREF_QUIET = "quiet"
+AUTO_PREFERENCES = [AUTO_PREF_DEFAULT, AUTO_PREF_EFFICIENT, AUTO_PREF_QUIET]

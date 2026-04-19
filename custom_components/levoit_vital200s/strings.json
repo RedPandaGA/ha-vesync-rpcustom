@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to VeSync",
+        "data": {
+          "username": "VeSync Email",
+          "password": "VeSync Password",
+          "time_zone": "Time Zone (e.g. America/New_York)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to VeSync. Check your network.",
+      "invalid_auth": "Invalid email or password.",
+      "no_devices": "No Levoit Vital 200S devices found on this account.",
+      "unknown": "Unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "Account already configured."
+    }
+  }
+}
