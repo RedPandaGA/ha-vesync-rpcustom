@@ -145,7 +145,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await manager.__aexit__(None, None, None)
             raise ConfigEntryNotReady("Failed to log in to VeSync")
         await manager.get_devices()
-        await manager.update()
+        for d in manager.devices.air_purifiers:
+            if "V201S" in d.device_type:
+                await d.get_details()
     except ConfigEntryNotReady:
         raise
     except Exception as err:
@@ -165,16 +167,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady("No Levoit Vital 200S devices found")
 
     async def async_update_data() -> dict:
-        """Fetch latest state from VeSync."""
-        try:
-            await manager.update()
-        except Exception as err:
-            raise UpdateFailed(f"Error updating VeSync: {err}") from err
-        return {
-            d.cid: d
-            for d in manager.devices.air_purifiers
-            if "V201S" in d.device_type
-        }
+        """Fetch latest state by calling get_details() on each device individually.
+
+        Deliberately avoids manager.update() which runs all get_details() calls
+        concurrently under a shared traceId. The VeSync API caches responses by
+        traceId and returns stale data to the second device in the batch.
+        Sequential individual calls each get their own fresh traceId.
+        """
+        result = {}
+        for d in list(manager.devices.air_purifiers):
+            if "V201S" not in d.device_type:
+                continue
+            try:
+                await d.get_details()
+                result[d.cid] = d
+            except Exception as err:
+                _LOGGER.warning(
+                    "Failed to update device '%s': %s", d.device_name, err
+                )
+        if not result:
+            raise UpdateFailed("All device updates failed")
+        return result
 
     coordinator = LevoitCoordinator(
         hass,
