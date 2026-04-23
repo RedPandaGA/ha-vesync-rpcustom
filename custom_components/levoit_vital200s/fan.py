@@ -137,7 +137,7 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
             await self._device.turn_off()
             self._device.state.device_status = "off"
             self.async_write_ha_state()
-            self.coordinator.async_burst_refresh()
+            self.coordinator.async_burst_refresh(self._device)
             return
 
         if not self.is_on:
@@ -155,7 +155,7 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
         self.async_write_ha_state()
 
         # Burst-poll to confirm cloud state at +1s and +4s
-        self.coordinator.async_burst_refresh()
+        self.coordinator.async_burst_refresh(self._device)
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set the preset mode."""
@@ -179,7 +179,7 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
         self._device.state.mode = preset_mode
         self.async_write_ha_state()
 
-        self.coordinator.async_burst_refresh()
+        self.coordinator.async_burst_refresh(self._device)
 
     async def async_turn_on(
         self,
@@ -197,11 +197,11 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
         await self._device.turn_on()
         self._device.state.device_status = "on"
         self.async_write_ha_state()
-        self.coordinator.async_burst_refresh()
+        self.coordinator.async_burst_refresh(self._device)
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn the fan off."""
         await self._device.turn_off()
         self._device.state.device_status = "off"
         self.async_write_ha_state()
-        self.coordinator.async_burst_refresh()
+        self.coordinator.async_burst_refresh(self._device)

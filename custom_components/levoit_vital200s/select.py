@@ -74,4 +74,4 @@ class LevoitAutoPreferenceSelect(CoordinatorEntity, SelectEntity):
             _LOGGER.error("Invalid auto preference: %s", option)
             return
         await self._device.set_auto_preference(option)
-        self.coordinator.async_burst_refresh()
+        self.coordinator.async_burst_refresh(self._device)

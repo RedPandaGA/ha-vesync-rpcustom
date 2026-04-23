@@ -28,16 +28,18 @@ BURST_DELAYS = (1.0, 4.0)
 
 
 class LevoitCoordinator(DataUpdateCoordinator):
-    """Coordinator with burst-polling support after commands.
+    """Coordinator with per-device burst-polling after commands.
 
-    After any state-changing command (speed, mode, toggle, etc.) the entity
-    calls ``async_burst_refresh()``.  This schedules two rapid follow-up polls
-    at +1 s and +4 s on top of the normal 30 s interval so the UI catches up
-    with the device quickly without hammering the VeSync API.
+    The VeSync API reuses the same traceId across all calls in a single
+    manager.update() cycle, which causes the server to return a cached/wrong
+    response when two devices are polled back-to-back.  Calling
+    device.get_details() directly on one device issues its own independent
+    request with a fresh traceId, so the response is always correct.
 
-    A simple guard prevents overlapping bursts: if a burst is already in
-    progress the new request is ignored — the existing burst polls will pick up
-    the latest state anyway.
+    After a command, the entity calls async_burst_refresh(device).  This
+    schedules get_details() on just that device at +1 s and +4 s, then
+    notifies all listeners so the UI updates immediately.  The normal 30 s
+    full poll continues unaffected.
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -45,37 +47,73 @@ class LevoitCoordinator(DataUpdateCoordinator):
         self._burst_active: bool = False
         self._burst_cancel_callbacks: list = []
 
-    def async_burst_refresh(self) -> None:
-        """Schedule rapid follow-up polls after a command.
+    def async_burst_refresh(self, device) -> None:
+        """Schedule rapid per-device polls after a command.
+
+        Calls device.get_details() independently — avoids the shared-traceId
+        bug in manager.update() that returns stale data for the second device.
 
         Safe to call from any async context — does not await anything.
         """
         if self._burst_active:
-            _LOGGER.debug("Burst already active, skipping new burst schedule")
+            _LOGGER.debug(
+                "Burst already active for another command, skipping (device: %s)",
+                device.device_name,
+            )
             return
 
         self._burst_active = True
-        _LOGGER.debug("Scheduling burst polls at %s s", BURST_DELAYS)
+        _LOGGER.debug(
+            "Scheduling burst polls for '%s' at %s s",
+            device.device_name,
+            BURST_DELAYS,
+        )
 
-        remaining = list(BURST_DELAYS)
+        num_polls = len(BURST_DELAYS)
 
         def _make_callback(delay_index: int):
-            """Return the callback for the Nth burst poll."""
             async def _do_poll(_now) -> None:
+                is_last = delay_index == num_polls - 1
                 try:
-                    await self.async_request_refresh()
+                    _LOGGER.debug(
+                        "Burst poll %d/%d: calling get_details() for '%s'",
+                        delay_index + 1,
+                        num_polls,
+                        device.device_name,
+                    )
+                    await device.get_details()
+                    # Update coordinator data in-place and notify all listeners
+                    if self.data and device.cid in self.data:
+                        self.data[device.cid] = device
+                    self.async_set_updated_data(self.data)
+                    _LOGGER.debug(
+                        "Burst poll %d/%d complete for '%s': mode=%s speed=%s",
+                        delay_index + 1,
+                        num_polls,
+                        device.device_name,
+                        device.state.mode,
+                        device.state.fan_set_level,
+                    )
                 except Exception as err:
-                    _LOGGER.debug("Burst poll %d failed: %s", delay_index, err)
+                    _LOGGER.debug(
+                        "Burst poll %d/%d failed for '%s': %s",
+                        delay_index + 1,
+                        num_polls,
+                        device.device_name,
+                        err,
+                    )
                 finally:
-                    # After the last burst poll, clear the active flag
-                    if delay_index == len(remaining) - 1:
+                    if is_last:
                         self._burst_active = False
                         self._burst_cancel_callbacks.clear()
-                        _LOGGER.debug("Burst polling complete, resuming normal interval")
+                        _LOGGER.debug(
+                            "Burst complete for '%s', resuming normal interval",
+                            device.device_name,
+                        )
 
             return _do_poll
 
-        for i, delay in enumerate(remaining):
+        for i, delay in enumerate(BURST_DELAYS):
             cancel = async_call_later(self.hass, delay, _make_callback(i))
             self._burst_cancel_callbacks.append(cancel)
 
