@@ -81,6 +81,8 @@ class LevoitCoordinator(DataUpdateCoordinator):
                         num_polls,
                         device.device_name,
                     )
+                    from pyvesync.utils.helpers import Helpers
+                    Helpers.get_defaultvalues_attributes.cache_clear()
                     await device.get_details()
                     # Update coordinator data in-place and notify all listeners
                     if self.data and device.cid in self.data:
@@ -145,8 +147,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await manager.__aexit__(None, None, None)
             raise ConfigEntryNotReady("Failed to log in to VeSync")
         await manager.get_devices()
+        from pyvesync.utils.helpers import Helpers
         for d in manager.devices.air_purifiers:
             if "V201S" in d.device_type:
+                Helpers.get_defaultvalues_attributes.cache_clear()
                 await d.get_details()
     except ConfigEntryNotReady:
         raise
@@ -173,12 +177,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         concurrently under a shared traceId. The VeSync API caches responses by
         traceId and returns stale data to the second device in the batch.
         Sequential individual calls each get their own fresh traceId.
+
+        pyvesync uses @lru_cache on get_defaultvalues_attributes(), which freezes
+        the traceId on first call. We bust the cache before each device poll so
+        DefaultValues.traceId() is re-evaluated and produces a unique value.
         """
+        from pyvesync.utils.helpers import Helpers
         result = {}
         for d in list(manager.devices.air_purifiers):
             if "V201S" not in d.device_type:
                 continue
             try:
+                # Bust the lru_cache so traceId is re-evaluated for this request
+                Helpers.get_defaultvalues_attributes.cache_clear()
                 await d.get_details()
                 result[d.cid] = d
             except Exception as err:
