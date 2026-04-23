@@ -115,9 +115,9 @@ class LevoitSwitch(CoordinatorEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs) -> None:
         """Turn the switch on."""
         await self._def.set_state(self._device, True)
-        await self.coordinator.async_request_refresh()
+        self.coordinator.async_burst_refresh()
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn the switch off."""
         await self._def.set_state(self._device, False)
-        await self.coordinator.async_request_refresh()
+        self.coordinator.async_burst_refresh()
