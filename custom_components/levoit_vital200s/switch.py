@@ -20,6 +20,9 @@ class SwitchDef:
     key: str
     name: str
     icon: str
+    state_field: str  # field name on device.state for optimistic hold
+    state_on_value: object  # value when on (True, "on", etc)
+    state_off_value: object  # value when off
     # Lambda receives the device and returns current bool state
     get_state: object
     # Lambda receives (device, bool) and awaits the appropriate method
@@ -31,6 +34,9 @@ SWITCH_DEFS = [
         key="display",
         name="Display",
         icon="mdi:monitor",
+        state_field="display_set_status",
+        state_on_value="on",
+        state_off_value="off",
         get_state=lambda d: str(d.state.display_set_status) == "on",
         set_state=lambda d, v: d.toggle_display(v),
     ),
@@ -38,6 +44,9 @@ SWITCH_DEFS = [
         key="child_lock",
         name="Child Lock",
         icon="mdi:lock",
+        state_field="child_lock",
+        state_on_value=True,
+        state_off_value=False,
         get_state=lambda d: bool(d.state.child_lock),
         set_state=lambda d, v: d.toggle_child_lock(v),
     ),
@@ -45,6 +54,9 @@ SWITCH_DEFS = [
         key="light_detection",
         name="Light Detection",
         icon="mdi:brightness-auto",
+        state_field="light_detection_switch",
+        state_on_value="on",
+        state_off_value="off",
         get_state=lambda d: str(d.state.light_detection_switch) == "on",
         set_state=lambda d, v: d.toggle_light_detection(v),
     ),
@@ -115,9 +127,15 @@ class LevoitSwitch(CoordinatorEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs) -> None:
         """Turn the switch on."""
         await self._def.set_state(self._device, True)
+        self.coordinator.set_optimistic_hold(
+            self._device, {self._def.state_field: self._def.state_on_value}
+        )
         self.coordinator.async_burst_refresh(self._device)
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn the switch off."""
         await self._def.set_state(self._device, False)
+        self.coordinator.set_optimistic_hold(
+            self._device, {self._def.state_field: self._def.state_off_value}
+        )
         self.coordinator.async_burst_refresh(self._device)

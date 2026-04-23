@@ -2,6 +2,7 @@
 
 import logging
 import math
+import time
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.config_entries import ConfigEntry
@@ -70,9 +71,16 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Update device reference from coordinator data and refresh state."""
+        """Update device reference from coordinator data and refresh state.
+
+        If an optimistic hold is active (command was sent but cloud hasn't
+        synced yet), re-apply the known-good state over whatever the poll
+        returned so the UI doesn't flicker back to the old value.
+        """
         if self.coordinator.data and self._device.cid in self.coordinator.data:
             self._device = self.coordinator.data[self._device.cid]
+        # Re-apply optimistic state if cloud is still lagging
+        self.coordinator.apply_optimistic_hold(self._device)
         self.async_write_ha_state()
 
     @property
@@ -116,8 +124,34 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        """Return extra attributes for display in the UI."""
+        """Return extra attributes for display in the UI.
+
+        Poll timing attributes are included so dashboards can display a live
+        countdown to the next cloud sync without needing their own timers:
+
+          poll_interval_seconds   — configured polling interval (const)
+          seconds_since_last_poll — how long ago the last poll completed
+          seconds_until_next_poll — estimated seconds until the next poll
+          optimistic_hold_active  — True while local state overrides cloud data
+          optimistic_hold_expires — monotonic timestamp when hold expires (or 0)
+        """
+        from .const import SCAN_INTERVAL_SECONDS
         s = self._device.state
+        now = time.monotonic()
+
+        last_poll = self.coordinator.last_poll_monotonic
+        since_last = round(now - last_poll) if last_poll else None
+        until_next = (
+            max(0, round(SCAN_INTERVAL_SECONDS - (now - last_poll)))
+            if last_poll else None
+        )
+
+        hold = self.coordinator._optimistic_holds.get(self._device.cid)
+        hold_active = bool(hold and now < hold["until"])
+        hold_expires_in = (
+            max(0, round(hold["until"] - now)) if hold_active else 0
+        )
+
         return {
             "filter_life": s.filter_life,
             "air_quality_level": s.air_quality_level,
@@ -129,6 +163,12 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
             "fan_level": s.fan_level,
             "fan_set_level": s.fan_set_level,
             "mode": s.mode,
+            # Poll timing — readable by Lovelace cards / template sensors
+            "poll_interval_seconds": SCAN_INTERVAL_SECONDS,
+            "seconds_since_last_poll": since_last,
+            "seconds_until_next_poll": until_next,
+            "optimistic_hold_active": hold_active,
+            "optimistic_hold_expires_in": hold_expires_in,
         }
 
     async def async_set_percentage(self, percentage: int) -> None:
@@ -137,6 +177,7 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
             await self._device.turn_off()
             self._device.state.device_status = "off"
             self.async_write_ha_state()
+            self.coordinator.set_optimistic_hold(self._device, {"device_status": "off"})
             self.coordinator.async_burst_refresh(self._device)
             return
 
@@ -148,13 +189,17 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
 
         await self._device.set_fan_speed(level)
 
-        # Optimistic update so UI reflects the change immediately
+        # Optimistic update — write local state immediately
         self._device.state.mode = MODE_MANUAL
         self._device.state.fan_set_level = level
         self._device.state.fan_level = level
         self.async_write_ha_state()
 
-        # Burst-poll to confirm cloud state at +1s and +4s
+        # Hold this state for 20s so cloud lag doesn't flip the UI back
+        self.coordinator.set_optimistic_hold(
+            self._device,
+            {"mode": MODE_MANUAL, "fan_set_level": level, "fan_level": level},
+        )
         self.coordinator.async_burst_refresh(self._device)
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
@@ -179,6 +224,11 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
         self._device.state.mode = preset_mode
         self.async_write_ha_state()
 
+        # Hold this state so cloud lag doesn't flip the UI back
+        self.coordinator.set_optimistic_hold(
+            self._device,
+            {"mode": preset_mode},
+        )
         self.coordinator.async_burst_refresh(self._device)
 
     async def async_turn_on(
@@ -197,6 +247,7 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
         await self._device.turn_on()
         self._device.state.device_status = "on"
         self.async_write_ha_state()
+        self.coordinator.set_optimistic_hold(self._device, {"device_status": "on"})
         self.coordinator.async_burst_refresh(self._device)
 
     async def async_turn_off(self, **kwargs) -> None:
@@ -204,4 +255,5 @@ class LevoitVital200SFan(CoordinatorEntity, FanEntity):
         await self._device.turn_off()
         self._device.state.device_status = "off"
         self.async_write_ha_state()
+        self.coordinator.set_optimistic_hold(self._device, {"device_status": "off"})
         self.coordinator.async_burst_refresh(self._device)

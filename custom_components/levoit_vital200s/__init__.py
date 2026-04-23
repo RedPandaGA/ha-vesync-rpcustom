@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -27,37 +28,101 @@ PLATFORMS = ["fan", "sensor", "switch", "select"]
 BURST_DELAYS = (1.0, 4.0)
 
 
+# How long (seconds) to hold optimistic state before trusting cloud polls again.
+# VeSync cloud can take 10-20s to reflect a command the device already acted on.
+OPTIMISTIC_HOLD_SECONDS = 180
+
+
 class LevoitCoordinator(DataUpdateCoordinator):
-    """Coordinator with per-device burst-polling after commands.
+    """Coordinator with optimistic command state and per-device polling.
 
-    The VeSync API reuses the same traceId across all calls in a single
-    manager.update() cycle, which causes the server to return a cached/wrong
-    response when two devices are polled back-to-back.  Calling
-    device.get_details() directly on one device issues its own independent
-    request with a fresh traceId, so the response is always correct.
+    The VeSync cloud can lag 10-20 seconds behind the physical device after a
+    command — it acknowledges the command (code 0) but continues returning the
+    old state in subsequent getPurifierStatus polls.  Meanwhile the device
+    itself responds instantly.
 
-    After a command, the entity calls async_burst_refresh(device).  This
-    schedules get_details() on just that device at +1 s and +4 s, then
-    notifies all listeners so the UI updates immediately.  The normal 30 s
-    full poll continues unaffected.
+    Strategy:
+    - Commands apply an optimistic state snapshot immediately (the entity does
+      this via async_write_ha_state before calling us).
+    - We record that snapshot here with a timestamp so that poll results for
+      the same device are silently ignored during the hold window.
+    - After OPTIMISTIC_HOLD_SECONDS the hold expires and polls are trusted again.
+    - Burst polls still run so we catch the cloud eventually syncing, but they
+      don't stomp the optimistic state while the hold is active.
     """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._burst_active: bool = False
         self._burst_cancel_callbacks: list = []
+        # cid -> {"until": float, "state": dict}
+        self._optimistic_holds: dict = {}
+        # Monotonic timestamp of the last completed successful poll
+        self.last_poll_monotonic: float = 0.0
+
+    def set_optimistic_hold(self, device, state_snapshot: dict) -> None:
+        """Record expected state for a device and suppress conflicting polls.
+
+        Args:
+            device: The pyvesync device that received a command.
+            state_snapshot: Dict of state field names -> expected values,
+                e.g. {"mode": "manual", "fan_set_level": 4, "fan_level": 4}.
+        """
+        until = time.monotonic() + OPTIMISTIC_HOLD_SECONDS
+        self._optimistic_holds[device.cid] = {"until": until, "state": state_snapshot}
+        _LOGGER.debug(
+            "Optimistic hold set for '%s' for %ds: %s",
+            device.device_name,
+            OPTIMISTIC_HOLD_SECONDS,
+            state_snapshot,
+        )
+
+    def apply_optimistic_hold(self, device) -> bool:
+        """Re-apply optimistic state if the hold window is still active.
+
+        Called by _handle_coordinator_update in each entity after a poll
+        updates device.state. If the hold is active, we overwrite whatever
+        the poll returned with the known-good optimistic values so the UI
+        doesn't flicker back.
+
+        Returns True if the hold was applied (caller should write HA state),
+        False if the hold has expired and poll data should be trusted.
+        """
+        hold = self._optimistic_holds.get(device.cid)
+        if not hold:
+            return False
+        if time.monotonic() > hold["until"]:
+            del self._optimistic_holds[device.cid]
+            _LOGGER.debug(
+                "Optimistic hold expired for '%s', trusting cloud state",
+                device.device_name,
+            )
+            return False
+        # Re-stamp the optimistic values onto the device state object
+        for field, value in hold["state"].items():
+            try:
+                setattr(device.state, field, value)
+            except Exception:
+                pass
+        _LOGGER.debug(
+            "Optimistic hold active for '%s', overriding poll result: %s",
+            device.device_name,
+            hold["state"],
+        )
+        return True
 
     def async_burst_refresh(self, device) -> None:
-        """Schedule rapid per-device polls after a command.
+        """Schedule follow-up polls after a command to catch cloud sync.
 
-        Calls device.get_details() independently — avoids the shared-traceId
-        bug in manager.update() that returns stale data for the second device.
+        Polls still run so we eventually confirm the cloud caught up, but
+        apply_optimistic_hold() will suppress any conflicting values until
+        the hold window expires.
 
         Safe to call from any async context — does not await anything.
         """
         if self._burst_active:
             _LOGGER.debug(
-                "Burst already active for another command, skipping (device: %s)",
+                "Burst already active, skipping new burst (device: %s)",
                 device.device_name,
             )
             return
@@ -84,7 +149,6 @@ class LevoitCoordinator(DataUpdateCoordinator):
                     from pyvesync.utils.helpers import Helpers
                     Helpers.get_defaultvalues_attributes.cache_clear()
                     await device.get_details()
-                    # Update coordinator data in-place and notify all listeners
                     if self.data and device.cid in self.data:
                         self.data[device.cid] = device
                     self.async_set_updated_data(self.data)
@@ -109,7 +173,7 @@ class LevoitCoordinator(DataUpdateCoordinator):
                         self._burst_active = False
                         self._burst_cancel_callbacks.clear()
                         _LOGGER.debug(
-                            "Burst complete for '%s', resuming normal interval",
+                            "Burst complete for '%s'",
                             device.device_name,
                         )
 
@@ -198,6 +262,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
         if not result:
             raise UpdateFailed("All device updates failed")
+        coordinator.last_poll_monotonic = time.monotonic()
         return result
 
     coordinator = LevoitCoordinator(
