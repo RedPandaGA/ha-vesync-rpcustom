@@ -130,7 +130,6 @@ class LevoitSwitch(CoordinatorEntity, SwitchEntity):
         self.coordinator.set_optimistic_hold(
             self._device, {self._def.state_field: self._def.state_on_value}
         )
-        self.coordinator.async_burst_refresh(self._device)
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn the switch off."""
@@ -138,4 +137,3 @@ class LevoitSwitch(CoordinatorEntity, SwitchEntity):
         self.coordinator.set_optimistic_hold(
             self._device, {self._def.state_field: self._def.state_off_value}
         )
-        self.coordinator.async_burst_refresh(self._device)

@@ -6,7 +6,7 @@ CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_TIME_ZONE = "time_zone"
 
-DEFAULT_TIME_ZONE = "America/New_York"
+DEFAULT_TIME_ZONE = "America/Chicago"
 SCAN_INTERVAL_SECONDS = 90
 
 MODE_MANUAL = "manual"
